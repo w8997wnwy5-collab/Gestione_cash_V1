@@ -678,15 +678,26 @@ function calc(m){
   c.quotaEvitabile = c.uscite>0 ? c.evitabile/c.uscite*100 : 0;
 
   var gg = giorniPassati(m), tot = giorniMese(m);
-  c.variabili = 0;
-  for(i=0;i<sp.length;i++) if(!sp[i].ric) c.variabili += num(sp[i].chf);
+  c.variabili = 0; c.unaTantum = 0;
+  var val = [];
+  for(i=0;i<sp.length;i++) if(!sp[i].ric){ c.variabili += num(sp[i].chf); val.push(num(sp[i].chf)); }
   c.fisse = c.uscite - c.variabili;
   var fisseAttese = totRicorrenti();
   c.corrente = (m === meseOggi());
-  /* Proiezione. Nei primi giorni il ritmo dice poco, quindi lo mescolo con lo
-     storico delle spese variabili e do peso al ritmo man mano che il mese avanza. */
+  /* Proiezione. Due accortezze, perché una proiezione gonfiata è una bugia:
+     1) una spesa grossa e isolata (un affitto scritto a mano, un'assicurazione, un volo)
+        non si ripete ogni settimana: la conto una volta sola e calcolo il ritmo sul resto;
+     2) nei primi giorni il ritmo dice poco, quindi lo mescolo con lo storico e gli do
+        peso man mano che il mese avanza. */
   if(c.corrente && gg>0){
-    var ritmo = c.variabili/gg*tot;
+    var ord = val.slice().sort(function(a,b){ return a-b; });
+    var med = ord.length ? ord[Math.floor(ord.length/2)] : 0;
+    var soglia = Math.max(med*4, 300);
+    var quotidiane = 0;
+    for(i=0;i<val.length;i++){
+      if(val[i]>soglia) c.unaTantum += val[i]; else quotidiane += val[i];
+    }
+    var ritmo = quotidiane/gg*tot + c.unaTantum;
     var storVar = Math.max(0, mediaUscite(3, m) - fisseAttese);
     var peso = Math.min(1, gg/10);
     var varProj = storVar>0 ? ritmo*peso + storVar*(1-peso) : ritmo;
@@ -1986,40 +1997,67 @@ function cardTask(lista){
   return h;
 }
 
+/* Dal saldo del mese alla cifra di oggi, una riga per sottrazione.
+   Niente si toglie di nascosto: se il margine è più basso dell'avanzo, qui si vede perché. */
+function cardMargine(bg, c){
+  var resta = c.entrate - c.uscite;
+  var toglie = bg.fisse>0 || bg.target>0;
+  var perGiorno = bg.gg>2;   /* negli ultimi giorni "al giorno" si gonfia e non dice più niente */
+  var h = '<div class="h2">Quanto posso spendere<span class="r">'+
+    (bg.resta<0 ? 'margine finito'
+      : (perGiorno? 'CHF '+chf(bg.giorno)+' al giorno' : 'CHF '+chf(bg.resta)+' in tutto'))+
+    '</span></div><div class="card">';
+  h += '<div class="stat"><em>Ti resta questo mese</em><b>'+chf(resta)+'</b></div>';
+  if(bg.fisse>0)
+    h += '<div class="stat"><em>Spese fisse ancora da pagare'+(bg.nFisse?' ('+bg.nFisse+')':'')+'</em>'+
+      '<b style="color:var(--warn)">− '+chf(bg.fisse)+'</b></div>';
+  if(bg.target>0)
+    h += '<div class="stat"><em>Che vuoi mettere da parte</em>'+
+      '<b style="color:var(--warn)">− '+chf(bg.target)+'</b></div>';
+  h += '<div class="stat" style="border-bottom:0;border-top:1px solid var(--line);margin-top:4px;padding-top:12px">'+
+    '<em style="color:var(--ink);font-weight:600">Margine libero</em>'+
+    '<b style="font-size:17px'+(bg.resta<0?';color:var(--warn)':'')+'">'+
+    (bg.resta<0?'− ':'')+chf(Math.abs(bg.resta))+'</b></div>';
+
+  if(!toglie){
+    h += '<div class="note">Non hai spese fisse in sospeso né un obiettivo di risparmio impostato, '+
+      'quindi il margine coincide con quello che ti resta.</div>';
+  } else if(bg.resta<0){
+    h += '<div class="note warn">Il margine è sotto di <b>CHF '+chf(-bg.resta)+'</b>. '+
+      'Non vuol dire che il conto sia in rosso — ti restano comunque CHF '+chf(resta)+' — '+
+      'ma per pagare le fisse e mettere via i '+chf(bg.target)+' che ti sei dato, da qui a fine mese '+
+      'dovresti spendere zero. Le strade sono due: rivedere l\'obiettivo di risparmio o tagliare.</div>';
+  } else {
+    h += '<div class="note">Sono <b>CHF '+chf(bg.giorno)+' al giorno</b> per i '+bg.gg+
+      (bg.gg===1?' giorno che manca':' giorni che mancano')+', oggi compreso. '+
+      'Quello che non spendi si somma al risparmio.</div>';
+  }
+  if(bg.nFisse>0)
+    h += '<button class="btn ghost sm" onclick="applicaTutteDa(\''+c.mese+'\')">Registra le '+bg.nFisse+
+      ' spese fisse ('+chf(bg.fisse)+')</button>';
+  h += '</div>';
+  return h;
+}
+
 function tabHome(){
   var m = S.mese, c = calc(m), h = '', i;
   h += navMese();
 
   var resta = c.entrate - c.uscite;
   var bg = budgetGiornaliero(m);
-  if(bg && bg.entrate>0){
-    /* Il numero che conta davvero: quanto posso spendere oggi senza rompere il piano.
-       Negli ultimissimi giorni "al giorno" si gonfia e non dice più niente: lì mostro il totale. */
-    var neg = bg.giorno < 0;
-    var finale = bg.gg<=2 && !neg;
-    h += '<div class="hero"><div class="l">'+(neg?'Sei oltre il margine':(finale?'Ti resta fino a fine mese':'Puoi spendere oggi'))+'</div>'+
-      '<div class="v">'+(neg?'−':'')+'CHF '+chf(Math.abs(finale?bg.resta:bg.giorno))+'</div>'+
-      '<div class="s">'+(neg
-        ? 'Tolte le fisse ancora da pagare e i CHF '+chf(bg.target)+' da mettere da parte, sei sotto di CHF '+
-          chf(-bg.resta)+'. Da qui a fine mese ogni spesa esce dal risparmio.'
-        : (finale
-          ? 'Sono gli ultimi '+bg.gg+(bg.gg===1?' giorno':' giorni')+' del mese'+
-            (bg.fisse>0?', già tolti '+chf(bg.fisse)+' di fisse da pagare':'')+
-            (bg.target>0?' e '+chf(bg.target)+' di risparmio':'')+
-            '. Quello che non spendi resta tuo.'
-          : 'Restano <b>CHF '+chf(bg.resta)+'</b> per '+bg.gg+(bg.gg===1?' giorno':' giorni')+
-            (bg.fisse>0?', già tolti '+chf(bg.fisse)+' di fisse da pagare':'')+
-            (bg.target>0?' e '+chf(bg.target)+' che vuoi mettere da parte':'')+'.'))+'</div>'+
-      '<div class="bar"><i style="width:'+Math.min(100,c.uscite/bg.entrate*100).toFixed(1)+'%"></i></div>'+
-      '<div class="foot"><span>uscite '+chf(c.uscite)+'</span><span>entrate '+chf(bg.entrate)+'</span></div></div>';
-  } else if(c.entrate>0){
-    h += '<div class="hero"><div class="l">Avanzo del mese</div>'+
+  if(c.entrate>0){
+    /* Il numero grande è sempre la sottrazione che puoi rifare a mente: entrate meno
+       uscite registrate. Le cifre derivate (margine, quanto al giorno) stanno nella
+       scheda qui sotto, dove ogni riga che si toglie è scritta e verificabile. */
+    h += '<div class="hero"><div class="l">'+(c.corrente?'Ti resta questo mese':'Avanzo del mese')+'</div>'+
       '<div class="v">'+(resta<0?'−':'')+'CHF '+chf(Math.abs(resta))+'</div>'+
-      '<div class="s">'+(resta<0
-        ? 'Le uscite hanno superato le entrate di CHF '+chf(-resta)+'.'
-        : 'Tasso di risparmio del '+pct(c.tasso)+'.')+'</div>'+
+      '<div class="s">Entrate '+chf(c.entrate)+' meno '+chf(c.uscite)+' di uscite registrate'+
+        (c.corrente?' fino a oggi':'')+'. '+
+        (resta<0 ? 'Le uscite hanno superato le entrate di CHF '+chf(-resta)+'.'
+                 : 'Tasso di risparmio del '+pct(c.tasso)+'.')+'</div>'+
       '<div class="bar"><i style="width:'+Math.min(100,c.uscite/c.entrate*100).toFixed(1)+'%"></i></div>'+
       '<div class="foot"><span>uscite '+chf(c.uscite)+'</span><span>entrate '+chf(c.entrate)+'</span></div></div>';
+    if(bg) h += cardMargine(bg, c);
   } else {
     h += '<div class="hero"><div class="l">Uscite di '+nomeMese(m,1)+'</div>'+
       '<div class="v">CHF '+chf(c.uscite)+'</div>'+
@@ -2078,6 +2116,7 @@ function tabHome(){
     var conProj = serie.filter(function(x){ return x.corrente && num(x.proj)>x.uscite; }).length>0;
     h += '<div class="h2">Ultimi mesi</div><div class="card">'+chartMesi(serie)+
       '<div class="note">'+(conProj?'La parte sfumata dell\'ultimo mese è la proiezione a fine mese, spese fisse ancora da registrare comprese. ':'')+
+      (conProj && c.unaTantum>0 ? 'Le '+chf(c.unaTantum)+' di spese grosse e isolate di questo mese le conto una volta sola, non le estrapolo. ':'')+
       'Media delle uscite nei mesi già chiusi: <b>CHF '+chf(mediaUscite(3,m))+'</b>.'+
       (cf? ' Rispetto agli stessi '+cf.giorni+' giorni di '+nomeMese(cf.mese,1)+': <b>'+
         (cf.delta>0?'+':'−')+'CHF '+chf(Math.abs(cf.delta))+'</b>.':'')+'</div></div>';
@@ -2278,8 +2317,12 @@ function tabRisparmi(){
   var spm = speseMedieMensili();
   var mesiCop = spm>0 ? liq/spm : 0;
   var c = calc(S.mese);
-  h += '<div class="hero"><div class="l">Patrimonio</div><div class="v">CHF '+chf(pat)+'</div>'+
-    '<div class="s">'+chf(liq)+' liquidi'+(inv>0?' · '+chf(inv)+' investiti':'')+
+  /* Se non ci sono investimenti "patrimonio" è una parola grossa per il saldo di un conto:
+     chiamo le cose con il loro nome e dico da dove viene il numero. */
+  h += '<div class="hero"><div class="l">'+(inv>0?'Patrimonio':'Sui conti')+'</div>'+
+    '<div class="v">CHF '+chf(pat)+'</div>'+
+    '<div class="s">'+(inv>0? chf(liq)+' sui conti · '+chf(inv)+' investiti'
+                            : 'Il saldo che hai scritto tu qui sotto')+
     (accantonatoTot()>0?' · '+chf(accantonatoTot())+' già assegnati a obiettivi':'')+'</div></div>';
   h += '<div class="kpi">'+
     '<div><div class="l">Mesi coperti</div><div class="v '+(mesiCop>=3?'pos':'neg')+'">'+(spm>0?mesiCop.toFixed(1):'—')+'</div>'+
@@ -2289,6 +2332,15 @@ function tabRisparmi(){
     '<div><div class="l">Obiettivo mese</div><div class="v">'+chf(S.cfg.targetRisparmio)+'</div>'+
       '<div class="s">'+(pos(S.cfg.targetRisparmio)? (c.risparmio>=S.cfg.targetRisparmio?'centrato':'mancano '+chf(S.cfg.targetRisparmio-c.risparmio)) :'non impostato')+'</div></div>'+
   '</div>';
+
+  /* Due numeri che si assomigliano ma misurano cose diverse: senza dirlo sembrano
+     contraddirsi, e chi guarda pensa che l'app sbagli i conti. */
+  if(c.entrate>0 && liq>0){
+    h += '<div class="note">Sui conti hai <b>CHF '+chf(liq)+'</b>: è la fotografia di adesso, il saldo che '+
+      'aggiorni tu a mano. Questo mese ti è avanzato <b>CHF '+chf(c.risparmio)+'</b>: quello è il flusso, '+
+      'entrate meno uscite registrate. Non devono tornare uguali — il primo dice quanto hai, il secondo '+
+      'quanto il mese sta producendo — e il secondo entra nel primo solo quando aggiorni il saldo.</div>';
+  }
 
   /* fondo emergenza */
   if(spm>0){
@@ -2306,7 +2358,7 @@ function tabRisparmi(){
   h += '<div class="h2">Conti<button onclick="apriNuovoConto()">+ aggiungi</button></div><div class="card">'+
     (S.conti.length? S.conti.map(function(cn,idx){
       return '<div class="erow"><div class="en">'+esc(cn.nome)+
-        '<em>'+(pat>0?pct(num(cn.saldo)/pat*100)+' del patrimonio':'—')+'</em></div>'+
+        '<em>'+(pat>0?pct(num(cn.saldo)/pat*100)+(inv>0?' del patrimonio':' del totale'):'—')+'</em></div>'+
         '<input class="ev" type="number" inputmode="decimal" value="'+esc(cn.saldo||'')+'" onchange="aggiornaSaldo('+idx+',this.value)">'+
         '<button class="del" onclick="delConto('+idx+')">×</button></div>';
     }).join('') : '<div class="empty"><b>Nessun conto</b>Aggiungi almeno il conto dove ti arriva lo stipendio.</div>')+
