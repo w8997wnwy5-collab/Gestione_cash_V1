@@ -1,7 +1,7 @@
 /* Bilancio — service worker.
    Rete prima, cache come rete di sicurezza: così l'app funziona offline
    ma quando pubblichi una versione nuova la vedi subito. */
-var CACHE = 'bilancio-v1';
+var CACHE = 'bilancio-v2';
 var ASSETS = ['./', './index.html', './manifest.webmanifest'];
 
 self.addEventListener('install', function(e){
