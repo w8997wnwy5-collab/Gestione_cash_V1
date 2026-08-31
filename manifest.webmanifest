@@ -1,7 +1,7 @@
 {
   "name": "Bilancio",
   "short_name": "Bilancio",
-  "description": "Spese, risparmi, investimenti e obiettivi. I dati restano sul dispositivo.",
+  "description": "Spese, budget, obiettivi e task settimanali. I dati restano sul dispositivo.",
   "start_url": "./",
   "scope": "./",
   "display": "standalone",
