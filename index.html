@@ -453,7 +453,7 @@ function statoIniziale(){
   return {
     v:1, setup:false, tab:'home', mese:meseOggi(), obStep:0,
     cfg:{
-      nome:'', entrata:0, mensilita:12, extra:[],
+      nome:'', entrata:0, mensilita:12, extra:[], giornoCiclo:1,
       fx:0.95, fxData:'', sogliaEvitabile:80, targetRisparmio:0, targetTasso:0,
       budget:{}, chiedeNecessita:true
     },
@@ -493,8 +493,55 @@ function oggi(){ var d=new Date(); return iso(d); }
 function iso(d){
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');
 }
-function meseOggi(){ return oggi().slice(0,7); }
-function meseDi(dstr){ return String(dstr||'').slice(0,7); }
+/* ── Il mese vero: quello che parte quando arriva lo stipendio ──
+   Se ti pagano il 27, il tuo mese va dal 27 al 26 e il 1° del mese non deve
+   azzerare niente. Il periodo tiene la chiave 'YYYY-MM' come tutti gli altri
+   (etichette, storico, confronti restano identici): cambia solo quali giorni
+   ci finiscono dentro. Il nome è quello del mese che il periodo copre di più,
+   quindi con inizio il 27 il tratto 27 ago → 26 set si chiama settembre. */
+function ciclo(){
+  var g = Math.round(num(S && S.cfg ? S.cfg.giornoCiclo : 1));
+  return (g>=1 && g<=28) ? g : 1;
+}
+function meseDi(dstr){
+  var g = ciclo(), t = String(dstr==null?'':dstr);
+  if(g===1 || t.length<10) return t.slice(0,7);
+  var p = t.split('-');
+  var mese = parseInt(p[1],10)-1, giorno = parseInt(p[2],10);
+  if(g>=16){ if(giorno>=g) mese += 1; }
+  else if(giorno < g) mese -= 1;
+  var d = new Date(parseInt(p[0],10), mese, 1);
+  return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
+}
+function meseOggi(){ return meseDi(oggi()); }
+/* Primo e ultimo giorno del periodo. */
+function inizioPeriodo(m){
+  var g = ciclo();
+  if(g===1) return m+'-01';
+  var p = String(m).split('-');
+  return iso(new Date(parseInt(p[0],10), parseInt(p[1],10)-1-(g>=16?1:0), g));
+}
+function finePeriodo(m){ return shiftGiorni(inizioPeriodo(meseShift(m,1)), -1); }
+function periodoEtichetta(m){
+  if(ciclo()===1) return '';
+  return dataBreve(inizioPeriodo(m))+' – '+dataBreve(finePeriodo(m));
+}
+/* Dove cade, dentro il periodo, una spesa fissa che paghi il giorno N del mese. */
+function dataNelPeriodo(m, giorno){
+  var ini = inizioPeriodo(m), fin = finePeriodo(m);
+  if(ciclo()===1){
+    var pm = String(m).split('-');
+    var ult = new Date(parseInt(pm[0],10), parseInt(pm[1],10), 0).getDate();
+    return m+'-'+String(Math.min(Math.max(1,giorno), ult)).padStart(2,'0');
+  }
+  var p = ini.split('-'), anno = parseInt(p[0],10), mese = parseInt(p[1],10)-1;
+  for(var k=0;k<2;k++){
+    var ult2 = new Date(anno, mese+k+1, 0).getDate();
+    var d = iso(new Date(anno, mese+k, Math.min(Math.max(1,giorno), ult2)));
+    if(d>=ini && d<=fin) return d;
+  }
+  return ini;
+}
 var MESI = ['gennaio','febbraio','marzo','aprile','maggio','giugno','luglio','agosto','settembre','ottobre','novembre','dicembre'];
 var MESI3 = ['gen','feb','mar','apr','mag','giu','lug','ago','set','ott','nov','dic'];
 function nomeMese(m,corto){
@@ -506,10 +553,13 @@ function meseShift(m,k){
   var p = String(m).split('-'); var d = new Date(parseInt(p[0],10), parseInt(p[1],10)-1+k, 1);
   return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0');
 }
-function giorniMese(m){ var p=String(m).split('-'); return new Date(parseInt(p[0],10), parseInt(p[1],10), 0).getDate(); }
+function giorniMese(m){
+  if(ciclo()===1){ var p=String(m).split('-'); return new Date(parseInt(p[0],10), parseInt(p[1],10), 0).getDate(); }
+  return giorniTra(inizioPeriodo(m), inizioPeriodo(meseShift(m,1)));
+}
 function giorniPassati(m){
   if(m !== meseOggi()) return giorniMese(m);
-  return new Date().getDate();
+  return Math.min(giorniMese(m), giorniTra(inizioPeriodo(m), oggi()) + 1);
 }
 function dataBreve(dstr){
   var p = String(dstr).split('-');
@@ -892,7 +942,7 @@ function confrontoMese(m){
   var c = calc(m);
   var gg = c.corrente ? c.giorni : giorniMese(m);
   /* dello stesso periodo del mese precedente, per non confrontare mele con pere */
-  var lim = prec+'-'+String(Math.min(gg, giorniMese(prec))).padStart(2,'0');
+  var lim = shiftGiorni(inizioPeriodo(prec), Math.min(gg, giorniMese(prec))-1);
   var spPrec = S.spese.filter(function(s){ return meseDi(s.d)===prec && s.d<=lim; });
   var vPrec = sommaCHF(spPrec);
   if(vPrec<=0) return null;
@@ -1542,11 +1592,11 @@ function chartCalendario(m){
   }
   for(var k in perGiorno) if(perGiorno[k]>max) max = perGiorno[k];
   if(max<=0) return '';
-  var tot = giorniMese(m), primo = m+'-01', off = dow(primo);
+  var tot = giorniMese(m), primo = inizioPeriodo(m), off = dow(primo);
   var h = '<div class="cal">'+GIORNI3.map(function(g){ return '<div class="cw">'+g.charAt(0)+'</div>'; }).join('');
   for(i=0;i<off;i++) h += '<div class="cd vuoto"></div>';
   for(i=1;i<=tot;i++){
-    var ds = m+'-'+String(i).padStart(2,'0');
+    var ds = shiftGiorni(primo, i-1);
     var v = perGiorno[ds]||0;
     var q = max>0 ? v/max : 0;
     var mix = v>0 ? Math.round(16+q*84) : 0;
@@ -1554,7 +1604,7 @@ function chartCalendario(m){
     h += '<button class="cd'+(ds===oggi()?' oggi':'')+(mix>52?' hi':'')+(futuro?' futuro':'')+'"'+
       (v>0?' onclick="apriGiorno(\''+ds+'\')"':'')+
       ' style="'+(v>0?'background:color-mix(in srgb,var(--c1) '+mix+'%,var(--line2));':'')+'"'+
-      ' title="'+dataBreve(ds)+(v>0?': CHF '+chf(v):': niente')+'">'+i+'</button>';
+      ' title="'+dataBreve(ds)+(v>0?': CHF '+chf(v):': niente')+'">'+parseInt(ds.slice(8),10)+'</button>';
   }
   h += '</div>';
   h += '<div class="calscale"><span>meno</span>'+[10,34,58,82,100].map(function(p){
@@ -1768,6 +1818,7 @@ function viewSetup(){
       '<div class="seg">'+[12,13].map(function(n){
         return '<button type="button" class="'+(num(S.cfg.mensilita)===n?'on':'')+'" onclick="setMens('+n+')">'+n+' mensilità</button>';
       }).join('')+'</div><div class="hint">In Svizzera la tredicesima non è automatica: guarda il contratto.</div></div>'+
+      campoCiclo()+
       '<div class="h2">Altre entrate fisse<button onclick="addExtra()">+ aggiungi</button></div><div class="card">'+
       (S.cfg.extra.length? S.cfg.extra.map(function(e,i){
         return '<div class="erow"><div class="en">'+esc(e.nome)+'</div>'+
@@ -1861,6 +1912,29 @@ function obGo(d){
   save(); render(); window.scrollTo(0,0);
 }
 function setMens(n){ S.cfg.mensilita = n; save(); render(); }
+/* Cambiare il giorno d'inizio ri-raggruppa tutte le spese: il mese corrente
+   va ricalcolato, altrimenti resteresti fermo su un periodo che non esiste più. */
+function setCiclo(v){
+  var g = Math.round(num(v));
+  if(!(g>=1 && g<=28)) g = 1;
+  S.cfg.giornoCiclo = g;
+  S.mese = meseOggi();
+  save(); render();
+  toast(g===1 ? 'Il mese segue di nuovo il calendario.'
+              : 'Il tuo mese ora va dal '+dataBreve(inizioPeriodo(S.mese))+' al '+dataBreve(finePeriodo(S.mese))+'.');
+}
+function campoCiclo(){
+  var g = ciclo(), m = meseOggi();
+  return '<div class="field"><label>Il tuo mese parte il giorno</label>'+
+    '<input type="number" inputmode="numeric" min="1" max="28" value="'+g+'" onchange="setCiclo(this.value)">'+
+    '<div class="hint">'+(g===1
+      ? 'Adesso segue il calendario, dal 1° all\'ultimo giorno. Se lo stipendio ti arriva il 27, '+
+        'metti 27: il periodo diventa 27 → 26 e il primo del mese non azzera più niente mentre stai '+
+        'ancora spendendo la busta paga di prima.'
+      : 'Il periodo in corso va dal <b>'+dataBreve(inizioPeriodo(m))+'</b> al <b>'+dataBreve(finePeriodo(m))+
+        '</b> e si chiama '+nomeMese(m)+', il mese che copre di più. Le spese vecchie si riorganizzano da sole: '+
+        'niente si perde, cambia solo dove cadono i confini.')+'</div></div>';
+}
 function setTargetRisp(v){
   S.cfg.targetRisparmio = num(v);
   var e = entrateMese(meseOggi());
@@ -1933,8 +2007,9 @@ function navMese(){
     '<div style="flex:1;text-align:center;cursor:pointer" onclick="'+(futuro?'':'vaiA(\''+meseOggi()+'\')')+'">'+
     '<div style="font-size:15px;font-weight:600;text-transform:capitalize">'+nomeMese(m)+'</div>'+
     '<div style="font-family:var(--mono);font-size:10px;color:var(--mute);letter-spacing:.5px">'+
+      (periodoEtichetta(m)? periodoEtichetta(m).toUpperCase()+' · ' : '')+
       (m===meseOggi()? 'GIORNO '+giorniPassati(m)+' DI '+giorniMese(m)
-                     : speseDi(m).length+' SPESE · TOCCA PER TORNARE A OGGI')+'</div></div>'+
+                     : speseDi(m).length+' SPESE')+'</div></div>'+
     '<button class="del" style="font-size:22px;'+(futuro?'opacity:.25':'')+'" onclick="vaiMese(1)" aria-label="Mese successivo">›</button>'+
   '</div>';
 }
@@ -2124,7 +2199,7 @@ function tabHome(){
 
   var ult = c.spese.slice(0,5);
   h += '<div class="h2">Ultime spese<button onclick="go(\'spese\')">vedi tutte</button></div><div class="card">'+
-    (ult.length? ult.map(rigaSpesa).join('') : '<div class="empty"><b>Ancora niente per '+nomeMese(m,1)+'</b>Tocca il + in basso a destra per aggiungere la prima spesa.</div>')+
+    (ult.length? ult.map(function(x){ return rigaSpesa(x); }).join('') : '<div class="empty"><b>Ancora niente per '+nomeMese(m,1)+'</b>Tocca il + in basso a destra per aggiungere la prima spesa.</div>')+
   '</div>';
   return h;
 }
@@ -2209,7 +2284,7 @@ function tabSpese(){
     for(k in c.perGiorno) if(c.perGiorno[k]>picco){ picco = c.perGiorno[k]; gg = k; }
     var vuoti = 0;
     for(var i=1;i<=giorniPassati(m);i++){
-      var ds = m+'-'+String(i).padStart(2,'0');
+      var ds = shiftGiorni(inizioPeriodo(m), i-1);
       if(!c.perGiorno[ds]) vuoti++;
     }
     h += '<div class="h2">Il mese giorno per giorno</div><div class="card">'+cal+
@@ -2613,6 +2688,7 @@ function tabSet(){
     '<div class="field"><label>Mensilità</label><div class="seg">'+[12,13].map(function(n){
       return '<button type="button" class="'+(num(S.cfg.mensilita)===n?'on':'')+'" onclick="setMens('+n+')">'+n+'</button>';
     }).join('')+'</div></div>'+
+    campoCiclo()+
     (S.cfg.extra.length? '<div class="h2" style="margin-top:16px">Entrate extra</div>'+S.cfg.extra.map(function(e,i){
       return '<div class="erow"><div class="en">'+esc(e.nome)+'</div>'+
         '<input class="ev" type="number" inputmode="decimal" value="'+esc(e.imp)+'" oninput="S.cfg.extra['+i+'].imp=num(this.value);save()">'+
@@ -3011,8 +3087,7 @@ function applicaRic(id, silenzioso){
   if(!r || num(r.imp)<=0){ if(!silenzioso) toast('Prima metti l\'importo.'); return false; }
   var m = S.mese;
   if(S.applicati.indexOf(m+'|'+r.id)>=0) return false;
-  var giorno = Math.min(num(r.giorno)||1, giorniMese(m));
-  var data = m+'-'+String(giorno).padStart(2,'0');
+  var data = dataNelPeriodo(m, num(r.giorno)||1);
   if(m===meseOggi() && data>oggi()) data = oggi();
   S.spese.push({id:uid(), d:data, imp:num(r.imp), val:r.val||'CHF', fx:S.cfg.fx,
     chf:inCHF(r.imp, r.val, S.cfg.fx), desc:r.nome, cat:r.cat, need:num(r.need), diviso:false,
@@ -3437,6 +3512,8 @@ function normalizza(d){
     s.obiettivi.forEach(function(o){ s.task.snapAcc[o.id] = num(o.acc); });
   }
   if(typeof s.ultimoBackup !== 'string') s.ultimoBackup = '';
+  s.cfg.giornoCiclo = Math.round(num(s.cfg.giornoCiclo));
+  if(!(s.cfg.giornoCiclo>=1 && s.cfg.giornoCiclo<=28)) s.cfg.giornoCiclo = 1;
   if(s.cfg.task !== false) s.cfg.task = true;
   if(s.letti.length>400) s.letti = s.letti.slice(-400);
   if(!s.cfg.budget || typeof s.cfg.budget!=='object') s.cfg.budget = {};
