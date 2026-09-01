@@ -769,15 +769,55 @@ function totRicorrenti(){
   return t;
 }
 /* Spese fisse di questo mese non ancora registrate: pesano sul "quanto mi resta". */
+/* Una spesa fissa può essere già dentro il mese in tre modi: l'hai registrata
+   col pulsante, l'hai segnata come già pagata, oppure l'hai scritta tu a mano
+   come spesa normale — magari con l'importo esatto (444.95) invece di quello
+   tondo che c'è in lista (445). L'ultimo caso va riconosciuto dal nome:
+   altrimenti te la richiedo e, peggio, la conto due volte nel margine.
+   Una spesa non può coprire due voci diverse: la assegno a quella più vicina. */
+function copertureFisse(m){
+  var out = {}, usate = {}, i, j;
+  var attive = S.ricorrenti.filter(function(r){ return r.attiva!==false && num(r.imp)>0; });
+  if(!attive.length) return out;
+  var sp = speseDi(m);
+  for(i=0;i<attive.length;i++){
+    var r = attive[i];
+    if(S.applicati.indexOf(m+'|'+r.id)<0) continue;
+    out[r.id] = {tipo:'registrata'};
+    for(j=0;j<sp.length;j++) if(sp[j].ricId===r.id) usate[sp[j].id] = 1;
+  }
+  for(i=0;i<attive.length;i++){
+    var r2 = attive[i];
+    if(out[r2.id]) continue;
+    var chiave = piatto(r2.nome).trim();
+    if(chiave.length<3) continue;
+    var atteso = inCHF(r2.imp, r2.val, r2.fx||S.cfg.fx);
+    /* le bollette ballano di mese in mese: tollero uno scarto, non pretendo la cifra esatta */
+    var toll = Math.max(20, atteso*0.25);
+    var best = null, scarto = Infinity;
+    for(j=0;j<sp.length;j++){
+      var sx = sp[j];
+      if(usate[sx.id]) continue;
+      var d = piatto(sx.desc).trim();
+      if(!d) continue;
+      if(d.indexOf(chiave)<0 && chiave.indexOf(d)<0) continue;
+      var sc = Math.abs(num(sx.chf)-atteso);
+      if(sc>toll) continue;
+      if(sc<scarto){ scarto = sc; best = sx; }
+    }
+    if(best){ out[r2.id] = {tipo:'riconosciuta', spesa:best}; usate[best.id] = 1; }
+  }
+  return out;
+}
 function fisseDaPagare(m){
-  var t = 0, n = 0;
+  var cop = copertureFisse(m), t = 0, n = 0, mancanti = [];
   for(var i=0;i<S.ricorrenti.length;i++){
     var r = S.ricorrenti[i];
     if(r.attiva===false || num(r.imp)<=0) continue;
-    if(S.applicati.indexOf(m+'|'+r.id)>=0) continue;
-    t += inCHF(r.imp, r.val, r.fx||S.cfg.fx); n++;
+    if(cop[r.id]) continue;
+    t += inCHF(r.imp, r.val, r.fx||S.cfg.fx); n++; mancanti.push(r);
   }
-  return {tot:t, n:n};
+  return {tot:t, n:n, mancanti:mancanti, coperture:cop};
 }
 function mesiConDati(){
   var set = {}, i;
@@ -983,9 +1023,11 @@ function avvisi(m){
   /* — spese fisse non ancora registrate — */
   var f = fisseDaPagare(m);
   if(f.n>0){
-    push({id:'fisse-'+m, dup:'fisse', peso:78, cls:'i', ic:'+', tit:f.n+' spese fisse da registrare',
-      txt:'Affitto, assicurazioni e simili di '+nomeMese(m,1)+' non sono ancora nel conto: <b>CHF '+chf(f.tot)+'</b>. '+
-      'Finché mancano, il mese sembra più leggero di quello che è.',
+    push({id:'fisse-'+m, dup:'fisse', peso:78, cls:'i', ic:'+',
+      tit:f.n===1 ? 'Una spesa fissa da registrare' : f.n+' spese fisse da registrare',
+      txt:(f.n===1 ? '<b>'+esc(f.mancanti[0].nome)+'</b> di '+nomeMese(m,1)+' non è ancora nel conto: <b>CHF '+chf(f.tot)+'</b>. '
+                   : 'Affitto, assicurazioni e simili di '+nomeMese(m,1)+' non sono ancora nel conto: <b>CHF '+chf(f.tot)+'</b>. ')+
+      'Finché manca'+(f.n===1?'':'no')+', il mese sembra più leggero di quello che è.',
       azione:'applicaTutteDa(\''+m+'\')', azLab:'Aggiungile'});
   }
 
@@ -1311,8 +1353,9 @@ function generaTask(){
   if(f.n>0 || S.ricorrenti.filter(function(r){return r.attiva!==false && num(r.imp)>0;}).length){
     add({k:'fisse-'+m, dup:'fisse', peso:95, auto:true, fattoAuto:(f.n===0),
       tit:'Registra le spese fisse di '+nomeMese(m,1),
-      txt:f.n>0 ? f.n+' voci per CHF '+chf(f.tot)+' non sono ancora nel conto del mese.'
-                : 'Tutte registrate. Il mese ha dentro anche quello che paghi senza pensarci.',
+      txt:f.n>0 ? (f.n===1 ? '<b>'+esc(f.mancanti[0].nome)+'</b> non è ancora nel conto del mese: CHF '+chf(f.tot)+'.'
+                           : f.n+' voci per CHF '+chf(f.tot)+' non sono ancora nel conto del mese.')
+                : 'Tutte nel conto. Quelle che hai scritto a mano le ho riconosciute da sole.',
       azione:f.n>0?'applicaTutteDa(\''+m+'\')':null, azLab:'Aggiungile'});
   }
 
@@ -3040,23 +3083,50 @@ function aggiornaSheetRic(){
 function renderSheetRic(){
   var m = S.mese;
   var h = testa('Spese fisse');
+  var f = fisseDaPagare(m), cop = f.coperture;
+  var riconosciute = 0, k;
+  for(k in cop) if(cop[k].tipo==='riconosciuta') riconosciute++;
   h += '<p class="lede">Quelle che paghi ogni mese. Con "aggiungi" le registro nel mese che stai guardando ('+nomeMese(m)+'), '+
-    'con la data e la categoria giuste, senza riscriverle.</p>';
-  var attive = S.ricorrenti.filter(function(r){ return r.attiva!==false; });
-  var daFare = attive.filter(function(r){ return S.applicati.indexOf(m+'|'+r.id)<0; });
-  if(daFare.length) h += '<button class="btn acc" style="margin-bottom:14px" onclick="applicaTutte()">Aggiungi tutte a '+nomeMese(m,1)+' ('+chf(daFare.reduce(function(t,r){return t+inCHF(r.imp,r.val,r.fx||S.cfg.fx);},0))+')</button>';
+    'con la data e la categoria giuste, senza riscriverle. Se una l\'hai già scritta tu a mano la riconosco dal nome '+
+    'e non te la richiedo: l\'importo che vale è il tuo, non quello in lista.</p>';
+  if(f.n) h += '<button class="btn acc" style="margin-bottom:14px" onclick="applicaTutte()">'+
+    (f.n===1 ? 'Aggiungi '+esc(f.mancanti[0].nome)+' a '+nomeMese(m,1)+' ('+chf(f.tot)+')'
+             : 'Aggiungi le '+f.n+' che mancano a '+nomeMese(m,1)+' ('+chf(f.tot)+')')+'</button>';
   h += '<div class="card">'+(S.ricorrenti.length? S.ricorrenti.map(function(r,i){
-    var fatta = S.applicati.indexOf(m+'|'+r.id)>=0;
-    var off = r.attiva===false;
-    return '<div class="erow" style="'+(off?'opacity:.45':'')+'">'+
+    var c = cop[r.id], off = r.attiva===false;
+    var lab, fn, col;
+    if(c && c.tipo==='registrata'){ lab='fatta'; fn='annullaRic'; col='var(--ok)'; }
+    else if(c && c.tipo==='riconosciuta'){ lab='trovata'; fn='dettaglioFissa'; col='var(--ok)'; }
+    else { lab='aggiungi'; fn='applicaRic'; col='var(--accent)'; }
+    var riga = '<div class="erow" style="'+(off?'opacity:.45':'')+'">'+
       '<span class="dot" style="background:'+cat(r.cat).c+'"></span>'+
-      '<div class="en">'+esc(r.nome)+'<em>'+cat(r.cat).nome+' · '+esc(r.val||'CHF')+'</em></div>'+
-      '<input class="ev" type="number" inputmode="decimal" value="'+esc(r.imp||'')+'" oninput="S.ricorrenti['+i+'].imp=num(this.value);save()">'+
-      '<button class="del" style="font-size:13px;color:'+(fatta?'var(--ok)':'var(--accent)')+';font-weight:600" '+
-        'onclick="'+(fatta?'annullaRic':'applicaRic')+'(\''+r.id+'\')">'+(fatta?'fatta':'aggiungi')+'</button>'+
+      '<div class="en">'+esc(r.nome)+'<em>'+cat(r.cat).nome+((r.val&&r.val!=='CHF')?' · '+esc(r.val):'')+'</em></div>'+
+      '<input class="ev" style="width:82px;padding:9px 6px" type="number" inputmode="decimal" value="'+esc(r.imp||'')+
+        '" oninput="S.ricorrenti['+i+'].imp=num(this.value);save()">'+
+      '<button class="del" style="font-size:11.5px;color:'+col+';font-weight:700;letter-spacing:.2px" '+
+        'onclick="'+fn+'(\''+r.id+'\')">'+lab+'</button>'+
       '<button class="del" onclick="toggleRic(\''+r.id+'\')" title="Attiva/sospendi">'+(off?'▷':'❚❚')+'</button>'+
       '<button class="del" onclick="delRic(\''+r.id+'\')">×</button></div>';
+    var sotto = '';
+    if(c && c.tipo==='riconosciuta'){
+      var sx = c.spesa;
+      var atteso = inCHF(r.imp, r.val, r.fx||S.cfg.fx);
+      var diverso = Math.abs(num(sx.chf)-atteso) >= 0.005;
+      sotto = '<div style="font-size:11.5px;color:var(--mute);line-height:1.5;margin:-3px 0 9px 21px">'+
+        'Già nel conto: <b style="color:var(--ink)">'+esc(sx.desc)+'</b>, CHF '+chf2(sx.chf)+' del '+dataBreve(sx.d)+
+        '. Non la conto due volte.'+
+        (diverso? ' <a href="#" onclick="allineaFissa(\''+r.id+'\',\''+sx.id+'\');return false" '+
+          'style="color:var(--accent);font-weight:600">Usa '+chf2(sx.imp)+' come importo fisso.</a>' : '')+
+        '</div>';
+    } else if(!c && !off && num(r.imp)>0){
+      sotto = '<div style="margin:-3px 0 9px 21px"><button class="del" style="font-size:11.5px;color:var(--mute);'+
+        'padding:0;text-decoration:underline" onclick="segnaFissaPagata(\''+r.id+'\')">'+
+        'l\'ho già pagata, non aggiungerla</button></div>';
+    }
+    return riga + sotto;
   }).join('') : '<div class="empty">Nessuna spesa fissa.</div>')+'</div>';
+  if(riconosciute) h += '<div class="note ok">'+riconosciute+(riconosciute===1?' voce l\'hai scritta tu a mano e l\'ho riconosciuta'
+    : ' voci le hai scritte tu a mano e le ho riconosciute')+': non te le richiedo e non le sottraggo una seconda volta dal margine.</div>';
   h += '<div class="h2">Aggiungine una</div>'+
     '<div class="addrow"><input type="text" id="nrNome" placeholder="Nome">'+
     '<input class="sm" type="number" inputmode="decimal" id="nrImp" placeholder="CHF">'+
@@ -3064,6 +3134,31 @@ function renderSheetRic(){
     '<div class="note">Totale fisse attive: <b>CHF '+chf(totRicorrenti())+' al mese</b>, cioè '+chf(totRicorrenti()*12)+' all\'anno.</div>';
   h += '<button class="btn ghost" style="margin-top:14px" onclick="chiudi()">Chiudi</button>';
   modal(h);
+}
+/* Riconosciuta male, o scritta con un nome che non somiglia? Segnala pagata a
+   mano: non creo nessuna spesa, tolgo solo la richiesta per questo periodo. */
+function segnaFissaPagata(id){
+  var m = S.mese;
+  if(S.applicati.indexOf(m+'|'+id)<0) S.applicati.push(m+'|'+id);
+  save(); aggiornaSheetRic(); render();
+  toast('Segnata come già pagata per '+nomeMese(m,1)+'. Non la aggiungo al conto.');
+}
+/* L'importo vero che paghi vale più di quello tondo che avevi messo in lista. */
+function allineaFissa(rid, sid){
+  var sx = null, i;
+  for(i=0;i<S.spese.length;i++) if(S.spese[i].id===sid) sx = S.spese[i];
+  if(!sx) return;
+  for(i=0;i<S.ricorrenti.length;i++) if(S.ricorrenti[i].id===rid){
+    S.ricorrenti[i].imp = num(sx.imp);
+    S.ricorrenti[i].val = sx.val||'CHF';
+  }
+  save(); aggiornaSheetRic(); render();
+  toast('Importo fisso aggiornato a '+chf2(sx.imp)+' '+(sx.val||'CHF')+'.');
+}
+function dettaglioFissa(rid){
+  var c = copertureFisse(S.mese)[rid];
+  if(c && c.spesa) apriSpesa(c.spesa.id);
+  else toast('Registrata per questo mese.');
 }
 function addRicorrente(){
   var n = document.getElementById('nrNome'), v = document.getElementById('nrImp');
@@ -3086,7 +3181,7 @@ function applicaRic(id, silenzioso){
   for(i=0;i<S.ricorrenti.length;i++) if(S.ricorrenti[i].id===id) r = S.ricorrenti[i];
   if(!r || num(r.imp)<=0){ if(!silenzioso) toast('Prima metti l\'importo.'); return false; }
   var m = S.mese;
-  if(S.applicati.indexOf(m+'|'+r.id)>=0) return false;
+  if(copertureFisse(m)[r.id]) return false;
   var data = dataNelPeriodo(m, num(r.giorno)||1);
   if(m===meseOggi() && data>oggi()) data = oggi();
   S.spese.push({id:uid(), d:data, imp:num(r.imp), val:r.val||'CHF', fx:S.cfg.fx,
